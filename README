@@ -1,0 +1,526 @@
+= EzBench =
+
+This repo contains a collection of tools to benchmark graphics-related
+patch-series.
+
+== Installation ==
+
+WIP
+
+== Runner.sh / Core.sh ==
+
+WARNING: This tool can be used directly from the CLI but it is recommenced that
+you use ezbench in conjunction with ezbenchd which together support testing
+kernels and which can recover upon errors.
+
+WARNING 2: core.sh is now considered deprecated
+
+This tool is responsible for collecting the data and generating logs that will
+be used by another tool to generate a visual report.
+
+To operate, this script requires a git repo, the ability to compile and deploy
+a commit and then benchmarks to be run. To simplify the usage, a profile should
+be written for each repo you want to test that will allow ezbench to check the
+current version that is deployed, to compile and install a new version and set
+some default parameters to avoid typing very-long command lines every time a
+set of benchmarks needs to be run.
+
+By default, the logs will be outputed in logs/<date of the run>/ and are stored
+mostly as csv files. The main report is found under the name results and needs
+to read with "less -r" to get the colours out! The list of commits tested is
+found under the name commit_list. A comprehensive documentation of the file
+structure will be written really soon.
+
+You may specify whatever name you want by adding -N <name> to the command line.
+This is very useful when testing kernel-related stuff as we need to reboot on
+a new kernel to test a new commit.
+
+
+=== Dependencies ===
+
+The real core of ezbench requires:
+ - A recent-enough version of bash
+ - awk
+ - all the other typical binutils binaries
+
+If you plan on recompiling drivers (such as mesa or the kernel), you will need:
+ - autotools
+ - gcc/clang
+ - git
+ - make
+
+To run the xserver, you will need the following applications:
+ - chvt
+ - sudo (set up not to ask for passwords in /etc/sudoers)
+ - Xorg
+ - xrandr
+ - xset
+
+To get visual feedback when compiling, you will need:
+ - twm
+ - xterm
+
+If you want to use specify which compositor should be run, you will need to
+install the following applications:
+ - unbuffer (part of expect package)
+ - wmctrl
+
+
+=== Configuration ===
+
+The tests configuration file is named user_parameters.sh. A sample file called
+user_parameters.sh.sample comes with the repo and is a good basis for your first
+configuration file.
+
+You will need to adjust this file to give the location of the base directory of
+all the benchmark folders and repositories for the provided profiles.
+
+Another important note about core.sh is that it is highly modular and
+hook-based. Have a look at profiles.d/$profile/conf.d/README for the
+documentation about the different hooks.
+
+It is possible to adjust the execution environment of the benchmarks by asking
+core.sh to execute one or multiple scripts before running anything else. This
+for example allows users to specify which compositor should be used.
+
+If core.sh is currently running and you want to stop its execution after the next
+test, you can create a file named 'requestExit' in the log folder.
+
+
+=== Core.sh examples ===
+
+You can use following steps to validate that ezbench is correctly
+configured and working; it finds tests, it can run them, it can build
+the software stack and it can do bisection.
+
+WARNING: running core.sh directly is deprecated. You can skip to
+ezbench section.
+
+
+==== Listing tests ====
+
+This lists all supported tests and their configurations:
+    ./core.sh -l | tr ' ' '\n'
+
+
+==== Running tests ====
+
+This runs a single test without building anything:
+    WIP
+
+
+==== Testing every patchset of a series ====
+
+The following command will test all the GLB27:Egypt cases but the ones
+containing the word cpu in them. It will run all the benchmarks 5 times on
+the 10 commits before HEAD~~.
+
+    ./core.sh -p ~/repos/mesa -B cpu -b GLB27:Egypt -r 5 -n 10 -H HEAD~~
+
+The following command run the synmark:Gl21Batch2 benchmark (note the $ at the
+end that indicates that we do not want the :cpu variant). It will run all the
+benchmarks 3 times on 3 commits (in this order), HEAD~5 HEAD~2 HEAD~10.
+
+    ./core.sh -p ~/repos/mesa -b synmark:Gl21Batch2$ -r 3 HEAD~5 HEAD~2 HEAD~10
+
+To use the mesa profile, which has the advantage of checking that the deployment
+was successful, you may achieve the same result by running:
+
+    ./core.sh -P mesa -b synmark:Gl21Batch2$ -r 3 HEAD~5 HEAD~2 HEAD~10
+
+You may also tell core.sh that you want to use a certain compositor, set
+environnement variables for the run or set any other option exposed by the
+profile you are using. To do so, use -c like in the following example:
+
+    ./core.sh -P mesa -b synmark:Gl21Batch2$ -r 3 -c confs.d/x11_comp/kwin HEAD
+
+
+==== Retrospectives ====
+
+Here is an example of how to generate a retrospective. The interesting part is
+the call to utils/get_commit_list.py which generates a list of commits
+
+    ./core.sh -p ~/repos/mesa -B cpu -b GLB27:Egypt:offscreen \
+                 -b GLB27:Trex:offscreen -b GLB30:Manhattan:offscreen \
+                 -b GLB30:Trex:offscreen -b unigine:heaven:1080p:fullscreen \
+                 -b unigine:valley:1080p:fullscreen -r 3 \
+                 -m "./recompile-release.sh" \
+                 `utils/get_commit_list.py -p ~/repos/mesa -s 2014-12-01 -i "1 week"`
+
+
+==== Giving a large list of tests to core.sh ====
+
+The command line argument's maximum length is limited. If you ever feel the need
+to pass a long list of tests in a reliable way, you may use the character '-' as
+a test name. This will make core.sh read the list of tests from stdin, until EOF.
+Here is an example:
+
+    ./core ./core.sh -P mesa -b - -r 1 HEAD
+    test1
+    ...
+    test5000
+    EOF (Ctrl + D)
+
+
+== ezbench ==
+
+This tool is meant to make the usage of core.sh easy and support testing
+performance across reboots.
+
+It allows creating a new performance report, scheduling benchmark
+runs, changing the execution rounds on the fly and then start, pause or halt
+the execution of this report.
+
+This tool uses core.sh as a backend for checking that the commits SHA1 and tests
+do exist so you are sure that the work can be executed when the time comes.
+
+
+=== Dependencies ===
+
+Python3 modules:
+ - dateutil
+ - numpy
+ - scipy
+ - pygit2
+
+
+=== Examples ===
+
+==== Listing available tests ====
+
+The ezbench program allows you to list the available tests by running:
+
+    ./ezbench -l
+
+
+==== Creating a report ====
+
+The ezbench command allows you to create a new performance report. To create
+a performance report named 'mesa-tracking-pub-benchmarks', using the core.sh
+profile 'mesa', you need to run the following command:
+
+    ./ezbench -p mesa mesa-tracking-pub-benchmarks
+
+
+==== Adding benchmarks runs ====
+
+Adding the 2 rounds of benchmark GLB27:Egypt:offscreen to the report
+mesa-tracking-pub-benchmarks for the commit HEAD can be done using the following
+command:
+
+    ./ezbench -r 2 -b GLB27:Egypt:offscreen -c HEAD mesa-tracking-pub-benchmarks
+
+A retrospective can be made in the same fashion as with core.sh at the exception
+made that it would also work across reboots which is good when testing kernels:
+
+    ./ezbench -r 3 -b GLB27:Egypt:offscreen -b GLB27:Trex:offscreen \
+              -b GLB30:Manhattan:offscreen -b GLB30:Trex:offscreen \
+              -b unigine:heaven:1080p:fullscreen -b unigine:valley:1080p:fullscreen \
+              -c "`utils/get_commit_list.py -p ~/repos/mesa -s 2014-12-01 -i "1 week"`"
+              mesa-tracking-pub-benchmarks
+
+
+==== Checking the status of a report ====
+
+You can check the status of the 'mesa-tracking-pub-benchmarks' report by calling
+the following command:
+
+    ./ezbench mesa-tracking-pub-benchmarks status
+
+
+==== Changing the execution status of the report ====
+
+When creating a report, the default state of the report is "initial" which means
+that nothing will happen until the state is changed. To change the state, you
+need to run the following command:
+
+    ./ezbench mesa-tracking-pub-benchmarks (run|pause|abort)
+
+ - The "run" state says that the report is ready to be run by ezbenchd.py.
+
+ - The "pause" and "abort" states indicate that ezbenchd.py should not be
+ executing any benchmarks from this report. The difference between the "pause"
+ and "abort" states is mostly for humans, to convey the actual intent.
+
+
+==== Starting collecting data without ezbenchd.py ====
+
+If you are not using ezbenchd.py, you may simply run the following command to
+start collecting data:
+
+    ./ezbench mesa-tracking-pub-benchmarks start
+
+This command will automatically change the state of the report to "run".
+
+
+== utils/owatch/owatch ==
+
+This tool monitors the output (on stdout and stderr) of a program and
+kills it if no output is seen in a given timeout period. If run as
+root, owatch will open and activate a hardware watchdog, and will ping
+it using the same timeout period. This will cause a reboot if no
+output is seen.
+
+This tool is only used by the tests that explicitly invoke it, it
+won't be used automatically for anything. An example is
+tests.d/piglit/igt.test.
+
+
+=== Dependencies ===
+
+ - gcc
+ - make
+
+
+== ezbenchd.py ==
+
+This tool monitors the ezbench reports created using the "ezbench" command and
+runs them if their state is right (state == RUN). It also schedules improvements
+when the run is over before moving on to the next report. It thus allow for
+collaborative sharing of the machine by different reports, as long as they
+make sure not to change the global state.
+
+
+=== Dependencies ===
+
+ - ezbench.py
+
+Python3 modules:
+ - mako
+
+
+=== Examples ===
+
+Simply running ezbenchd.py is enough to run all reports which are
+currently in the state "RUN", and set up an HTTP server to allow
+interacting with ezbenchd and see results.
+
+    ./ezbench -p mesa mesa-tracking-pub-benchmarks
+    ./ezbench -r 2 -b GLB27:Egypt:offscreen -c HEAD mesa-tracking-pub-benchmarks
+    ./ezbench mesa-tracking-pub-benchmarks run
+    ./ezbenchd.py  --http_server=0.0.0.0:8080
+
+
+=== Systemd integration ===
+
+Here is an example of systemd unit you can use to run ezbenchd as a daemon. This is
+needed if you want to test the kernel as you need to reboot. It will also add
+an http server listening on all interfaces on the port 8080.
+
+/etc/systemd/system/ezbenchd.service:
+	[Unit]
+	Description=Ezbench's daemon that executes the runs
+	Conflicts=getty@tty5.service
+	After=systemd-user-sessions.service getty@tty1.service plymouth-quit.service
+
+	[Service]
+	ExecStart=/.../ezbench/ezbenchd.py --http_server=0.0.0.0:8080
+	User=$USER
+	Group=$USER
+
+	[Install]
+	WantedBy=multi-user.target
+
+
+=== Nightly tests ===
+
+There is currently no real support for nightly tests on ezbench. However, it is
+quite trivial to use systemd to schedule updates to the repos and schedule runs
+using ezbench's CLI interface.
+
+/etc/systemd/system/ezbenchd_repo_update.timer:
+	[Unit]
+	Description=Run this timer every day to update repos and schedule runs
+	[Timer]
+	OnCalendar=*-*-* 20:30:00
+	Persistent=true
+
+	[Install]
+	WantedBy=timers.target
+
+/etc/systemd/system/ezbenchd_repo_update.service:
+	[Unit]
+	Description=Task to update the source repos and schedule more runs
+
+	[Service]
+	Type=oneshot
+	WorkingDirectory=/.../ezbench
+	ExecStart=/bin/bash repo_update.sh
+	User=$USER
+	Group=$USER
+
+/.../ezbench/repo_update.sh:
+	#!/bin/bash
+
+	ezbench_dir=$(pwd)
+	source user_parameters.sh
+
+	set -x
+
+	if [ -n "$REPO_MESA" ]
+	then
+			cd "$REPO_MESA"
+			git fetch
+			git reset --hard origin/master
+
+			cd $ezbench_dir
+			./ezbench -t gl_render -c HEAD -p mesa mesa_nightly run
+	fi
+
+
+=== Hooks ===
+
+Just like for core.sh, you may also want to hook into the logic of ezbenchd. To
+do so, you will need to write a program/script and give its path to ezbenchd
+with the --hook option.
+
+The program will receive the following variables in its environment:
+
+    - action: Action that triggered the hook
+        - start_running_tests: Smartezbench is about to run some tests
+        - mode_changed: The mode of the report has changed
+        - done_running_tests: Smartezbench is done running tests
+    - ezbench_dir: Directory containing ezbench
+    - ezbench_report_name: Name of the report currently being used
+    - ezbench_report_path: Path to the folder containing the current report
+    - ezbench_report_mode: Current mode of the report
+    - ezbench_report_mode_prev: Previous value of the mode, only set if
+                                action == mode_changed.
+
+As an example, you could have the following hook script to print a message
+whenever a mode change happens:
+
+	import os
+	if os.environ['action'] == "mode_changed":
+		s = "{}: Mode changed from {} to {}"
+		print(s.format(os.environ['ezbench_report_name'],
+		               os.environ['ezbench_report_mode_prev'],
+		               os.environ['ezbench_report_mode']))
+
+== Multi-node support ==
+
+Ezbench can be operated on multiple machines at the same time. In this case,
+each machine will still bisect independently of what others are doing, in order
+to maxime throughput.
+
+Clients queuing work will do so using a REST interface which is exported by
+controllerd.py. Work can be queued in multiple jobs, which can have their own
+priority, allowing you to prioritize some tasks above others.
+
+The different DUTs connect to controllerd.py by using dutd.py, which replaces
+ezbenchd.py. Dutd.py receives the commands from the controller and update it as
+for its current status.
+
+Reports coming out of ezbench will be sent from the DUT to the controller using
+git. The git URL is then shared with the original client, who can then clone and
+pull from it as updates come.
+
+Here are more details about the different components.
+
+=== Controllerd.py ===
+
+==== Dependencies ====
+
+Mandatory:
+ - python3
+ - bottle : REST server
+ - pygit2 : Git integration (based on libgit2)
+
+==== Configuration ====
+
+Controllerd is configured using a configuration file. Its default location is
+/etc/ezbench/controllerd.ini, which can be overriden with the command line
+argument --conf.
+
+Here is a sample of the configuration file:
+
+    [General]
+    # Name: Name you want to give to this controller
+    Name = MyController
+
+    # StateFile: File containing the permanent state on controllerd.
+    StateFile = /var/lib/controllerd/controllerd.state
+
+    # StateFileLock: Lock file protecting the state file.
+    StateFileLock = /var/lib/controllerd/controllerd.lock
+
+
+    [RESTServer]
+    # BindAddress: Address to bind for the public-facing REST server
+    BindAddress = 0.0.0.0:8080
+
+
+    [DUTServer]
+    # BindAddress: Address to bind for the DUT-facing TCP server
+    BindAddress = 0.0.0.0:42000
+
+
+    [Reports]
+    # ReportsBaseURL: Base URL for the read-only public-facing git repos that
+    #                  contain the reports from the different jobs and machines.
+    ReportsBaseURL = git://anongit.company.com/ezbench_reports
+
+    # ReportsBasePath: Base path to where reports should be stored
+    ReportsBasePath = /opt/ezbench/dut-reports
+
+
+    [Repos]
+    # GitRepoPath: Full path to the repo that will contain the different
+    #              git histories used by the DUTs for testing
+    GitRepoPath = /opt/sources/dut-repo
+
+
+==== REST Interface ====
+
+TODO: Check out unit_tests/controllerd.py.
+
+=== Dutd.py ===
+
+==== Dependencies ====
+
+Same dependencies as ezbench.py.
+
+==== Configuration ====
+
+Dutd is configured using a configuration file. Its default location is
+/etc/ezbench/dutd.ini, which can be overriden with the command line
+argument --conf.
+
+Here is a sample of the configuration file:
+
+    [General]
+    # Name: Name of this machine. By default, the hostname of the machine
+    #       will be used.
+    # Name =
+
+
+    [Controller]
+    # Address: Address of the controller. Format: host:port.
+    Host = controller:42000
+
+    # ReportsBaseURL: Base git URL that will be used to push the reports to
+    #                the controller.
+    ReportsBaseURL = dut@controller:/opt/ezbench/dut-reports
+
+    # GitRepoURL: The URL to the controller's repo that holds all the versions
+    #             that need to be tested locally.
+    GitRepoURL = dut@controller:/opt/sources/dut-repo
+
+    # Use one of the following methods
+    [ControllerCredentials]
+    # User: User to use for the authentication. If no password not key is
+    #       specified, the SSH agent will be queried
+    User = dut
+
+    # SSHKeyPriv: Use the following ssh key
+    #SSHKeyPriv = /home/ezbench/.ssh/id_rsa
+
+    # SSHKeyPub: Use the following ssh key
+    #SSHKeyPub = /home/ezbench/.ssh/id_rsa.pub
+
+    # SSHKeyPassphrase: Use the following passphrase to decrypt the key
+    #SSHKeyPassphrase = mypassphrase
+
+    # Password: Use the following tuple for authentication
+    #Password = password
+
